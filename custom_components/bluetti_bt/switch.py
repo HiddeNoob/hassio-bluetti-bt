@@ -197,38 +197,52 @@ class BluettiSwitch(CoordinatorEntity, SwitchEntity):
     async def write_to_device(self, state: bool):
         """Write to device."""
 
-        try:
-            device = await BleakScanner.find_device_by_address(self._address, timeout=5)
+        for attempt in range(1, 4):
+            try:
+                device = await BleakScanner.find_device_by_address(
+                    self._address, timeout=5
+                )
 
-            if device is None:
+                if device is None:
+                    raise TimeoutError("Device not found")
+
+                client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    device,
+                    device.name or "Unknown Device",
+                    max_attempts=10,
+                )
+
+                if not client.is_connected:
+                    raise ConnectionError("Device connection failed")
+
+                writer = DeviceWriter(
+                    client,
+                    self._bluetti_device,
+                    DeviceWriterConfig(
+                        timeout=30,
+                        use_encryption=self._use_encryption,
+                    ),
+                    lock=self._lock,
+                )
+
+                async with async_timeout.timeout(45):
+                    written = await writer.write(self._field.name, state)
+
+                if not written:
+                    raise ConnectionError("Device rejected write")
+
+                await self.coordinator.async_request_refresh()
                 return
 
-            client = await establish_connection(
-                BleakClientWithServiceCache,
-                device,
-                device.name or "Unknown Device",
-                max_attempts=10,
-            )
+            except (TimeoutError, ConnectionError) as err:
+                self._logger.warning(
+                    "Write attempt %d/3 failed for %s: %s",
+                    attempt,
+                    mac_loggable(self._address),
+                    err,
+                )
+                if attempt < 3:
+                    await asyncio.sleep(1)
 
-            if not client.is_connected:
-                return
-
-            writer = DeviceWriter(
-                client,
-                self._bluetti_device,
-                DeviceWriterConfig(use_encryption=self._use_encryption),
-                lock=self._lock,
-            )
-
-            async with async_timeout.timeout(15):
-                # Send command
-                await writer.write(self._field.name, state)
-
-                # Wait until device has changed value, otherwise reading register might reset it
-                await asyncio.sleep(5)
-
-        except TimeoutError:
-            self._logger.error("Timed out for device %s", mac_loggable(self._address))
-            return None
-
-        await self.coordinator.async_request_refresh()
+        self._logger.error("Unable to write %s after 3 attempts", self._response_key)
