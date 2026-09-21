@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import async_timeout
-from bleak import BleakScanner
+from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
+from homeassistant.components import bluetooth
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -64,6 +65,7 @@ async def async_setup_entry(
         switches_to_add.append(
             BluettiSwitch(
                 bluetti_device,
+                hass,
                 config.address,
                 coordinator,
                 device_info,
@@ -84,6 +86,7 @@ class BluettiSwitch(CoordinatorEntity, SwitchEntity):
     def __init__(
         self,
         bluetti_device: BluettiDevice,
+        hass: HomeAssistant,
         address: str,
         coordinator: PollingCoordinator,
         device_info: DeviceInfo,
@@ -100,6 +103,7 @@ class BluettiSwitch(CoordinatorEntity, SwitchEntity):
 
         e_name = f"{device_info.get('name')} {field.name}"
         self._bluetti_device = bluetti_device
+        self._hass = hass
         self._address = address
         self._field = field
         self._response_key = field.name
@@ -197,52 +201,55 @@ class BluettiSwitch(CoordinatorEntity, SwitchEntity):
     async def write_to_device(self, state: bool):
         """Write to device."""
 
-        for attempt in range(1, 4):
-            try:
-                device = await BleakScanner.find_device_by_address(
-                    self._address, timeout=5
-                )
+        async with self._lock:
+            for attempt in range(1, 4):
+                try:
+                    device = bluetooth.async_ble_device_from_address(
+                        self._hass,
+                        self._address,
+                        connectable=True,
+                    )
 
-                if device is None:
-                    raise TimeoutError("Device not found")
+                    if device is None:
+                        raise TimeoutError("Device not found in Bluetooth cache")
 
-                client = await establish_connection(
-                    BleakClientWithServiceCache,
-                    device,
-                    device.name or "Unknown Device",
-                    max_attempts=10,
-                )
+                    client = await establish_connection(
+                        BleakClientWithServiceCache,
+                        device,
+                        device.name or "Unknown Device",
+                        max_attempts=3,
+                    )
 
-                if not client.is_connected:
-                    raise ConnectionError("Device connection failed")
+                    if not client.is_connected:
+                        raise ConnectionError("Device connection failed")
 
-                writer = DeviceWriter(
-                    client,
-                    self._bluetti_device,
-                    DeviceWriterConfig(
-                        timeout=30,
-                        use_encryption=self._use_encryption,
-                    ),
-                    lock=self._lock,
-                )
+                    writer = DeviceWriter(
+                        client,
+                        self._bluetti_device,
+                        DeviceWriterConfig(
+                            timeout=30,
+                            use_encryption=self._use_encryption,
+                        ),
+                        lock=asyncio.Lock(),
+                    )
 
-                async with async_timeout.timeout(45):
-                    written = await writer.write(self._field.name, state)
+                    async with async_timeout.timeout(45):
+                        written = await writer.write(self._field.name, state)
 
-                if not written:
-                    raise ConnectionError("Device rejected write")
+                    if not written:
+                        raise ConnectionError("Device rejected write")
 
-                await self.coordinator.async_request_refresh()
-                return
+                    await self.coordinator.async_request_refresh()
+                    return
 
-            except (TimeoutError, ConnectionError) as err:
-                self._logger.warning(
-                    "Write attempt %d/3 failed for %s: %s",
-                    attempt,
-                    mac_loggable(self._address),
-                    err,
-                )
-                if attempt < 3:
-                    await asyncio.sleep(1)
+                except (TimeoutError, ConnectionError, BleakError) as err:
+                    self._logger.warning(
+                        "Write attempt %d/3 failed for %s: %s",
+                        attempt,
+                        mac_loggable(self._address),
+                        err,
+                    )
+                    if attempt < 3:
+                        await asyncio.sleep(1)
 
-        self._logger.error("Unable to write %s after 3 attempts", self._response_key)
+            self._logger.error("Unable to write %s after 3 attempts", self._response_key)
