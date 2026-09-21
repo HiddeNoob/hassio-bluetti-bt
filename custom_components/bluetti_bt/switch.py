@@ -39,6 +39,11 @@ async def async_setup_entry(
     """Setup switch entities."""
 
     config = FullDeviceConfig.from_dict(entry.data)
+    if config is None:
+        logger = logging.getLogger(__name__)
+        logger.error("Unable to parse Bluetti config entry")
+        return
+
     coordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
     lock = hass.data[DOMAIN][entry.entry_id][DATA_LOCK]
 
@@ -46,7 +51,7 @@ async def async_setup_entry(
         f"{__name__}.{mac_loggable(config.address).replace(':', '_')}"
     )
 
-    if config is None or not isinstance(coordinator, PollingCoordinator):
+    if not isinstance(coordinator, PollingCoordinator):
         logger.error("No coordinator found")
         return None
 
