@@ -5,12 +5,11 @@ import asyncio
 import re
 import logging
 from typing import List
-from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .utils import mac_loggable
 from .const import (
@@ -50,9 +49,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     logger.debug("Init Bluetti BT Integration")
 
-    if not bluetooth.async_address_present(hass, config.address):
-        raise ConfigEntryNotReady("Bluetti device not present")
-
     # Create data structure
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN].setdefault(entry.entry_id, {})
@@ -69,7 +65,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     try:
         await coordinator.async_config_entry_first_refresh()
-    except ConfigEntryNotReady as err:
+    except (UpdateFailed, TimeoutError, OSError) as err:
         logger.warning(
             "Initial Bluetti poll failed; continuing setup and retrying later: %s",
             err,
