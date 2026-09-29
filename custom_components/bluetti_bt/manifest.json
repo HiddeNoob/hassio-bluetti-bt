@@ -23,7 +23,8 @@
         { "local_name": "Handsfree*" },
         { "local_name": "PBOX*" },
         { "local_name": "PR1*" },
-        { "local_name": "PR3*" }
+        { "local_name": "PR3*" },
+        { "manufacturer_id": 19522 }
     ],
     "codeowners": ["@Patrick762"],
     "config_flow": true,
@@ -35,5 +36,5 @@
     "requirements": [
         "bluetti-bt-lib @ git+https://github.com/HiddeNoob/bluetti-bt-lib.git@be6726d"
     ],  
-    "version": "0.2.7"
+    "version": "0.2.8"
 }
