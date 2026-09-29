@@ -4,8 +4,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import async_timeout
-from bleak import BleakScanner
-from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -19,15 +17,13 @@ from homeassistant.helpers.update_coordinator import (
 from bluetti_bt_lib import (
     build_device,
     BluettiDevice,
-    DeviceWriter,
     DeviceField,
     FieldName,
 )
-from bluetti_bt_lib.bluetooth import DeviceWriterConfig
 
 from .types import FullDeviceConfig, get_category
 from . import device_info as dev_info, get_unique_id
-from .const import DATA_COORDINATOR, DATA_LOCK, DOMAIN
+from .const import DATA_COORDINATOR, DOMAIN
 from .coordinator import PollingCoordinator
 from .utils import mac_loggable, unique_id_logable
 
@@ -44,7 +40,6 @@ async def async_setup_entry(
         return
 
     coordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
-    lock = hass.data[DOMAIN][entry.entry_id][DATA_LOCK]
 
     logger = logging.getLogger(
         f"{__name__}.{mac_loggable(config.address).replace(':', '_')}"
@@ -73,7 +68,6 @@ async def async_setup_entry(
                 coordinator,
                 device_info,
                 field,
-                lock,
                 use_encryption=config.use_encryption,
                 category=category,
                 logger=logger,
@@ -93,7 +87,6 @@ class BluettiSwitch(CoordinatorEntity, SwitchEntity):
         coordinator: PollingCoordinator,
         device_info: DeviceInfo,
         field: DeviceField,
-        lock: asyncio.Lock,
         use_encryption: bool = False,
         category: EntityCategory | None = None,
         logger: logging.Logger = logging.getLogger(),
@@ -110,7 +103,6 @@ class BluettiSwitch(CoordinatorEntity, SwitchEntity):
         self._response_key = field.name
         self._use_encryption = use_encryption
         self._unavailable_counter = 5
-        self._lock = lock
 
         self._attr_has_entity_name = True
         self._attr_device_info = device_info
@@ -204,40 +196,23 @@ class BluettiSwitch(CoordinatorEntity, SwitchEntity):
 
         for attempt in range(1, 4):
             try:
-                device = await BleakScanner.find_device_by_address(
-                    self._address, timeout=5
-                )
-
-                if device is None:
-                    raise TimeoutError("Device not found")
-
-                client = await establish_connection(
-                    BleakClientWithServiceCache,
-                    device,
-                    device.name or "Unknown Device",
-                    max_attempts=10,
-                )
-
-                if not client.is_connected:
-                    raise ConnectionError("Device connection failed")
-
-                writer = DeviceWriter(
-                    client,
-                    self._bluetti_device,
-                    DeviceWriterConfig(
-                        timeout=30,
-                        use_encryption=self._use_encryption,
-                    ),
-                    lock=self._lock,
-                )
-
-                async with async_timeout.timeout(45):
-                    written = await writer.write(self._field.name, state)
+                async with async_timeout.timeout(60):
+                    written = await self.coordinator.async_write(
+                        self._field.name, state
+                    )
 
                 if not written:
                     raise ConnectionError("Device rejected write")
 
+                # Give the device time to apply the change, then verify it by
+                # reading the register back
+                await asyncio.sleep(3)
                 await self.coordinator.async_request_refresh()
+
+                response_data = (self.coordinator.data or {}).get(self._response_key)
+                if response_data is not state:
+                    raise ConnectionError("Device did not confirm the change")
+
                 return
 
             except (TimeoutError, ConnectionError) as err:

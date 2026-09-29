@@ -14,7 +14,6 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from .utils import mac_loggable
 from .const import (
     DATA_COORDINATOR,
-    DATA_LOCK,
     DOMAIN,
     MANUFACTURER,
 )
@@ -71,7 +70,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             err,
         )
     hass.data[DOMAIN][entry.entry_id].setdefault(DATA_COORDINATOR, coordinator)
-    hass.data[DOMAIN][entry.entry_id].setdefault(DATA_LOCK, lock)
 
     logger.debug("Creating entities")
     # Setup platforms
@@ -80,6 +78,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     logger.debug("Setup done")
 
     return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
+
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+    if not unload_ok:
+        return False
+
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    coordinator = entry_data.get(DATA_COORDINATOR)
+
+    if isinstance(coordinator, PollingCoordinator):
+        # Close the persistent bluetooth connection
+        await coordinator.async_unload()
+
+    hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+
+    return unload_ok
 
 
 def device_info(entry: ConfigEntry):
